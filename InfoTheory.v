@@ -30,63 +30,51 @@ Definition scan
   let outputs := snd t in
   (hd start states, outputs).
 
-(* Two types are isomorphic if we can convert back and forth between
-   them without losing information. *)
-Definition isomorphism {T U : Type} (ofT : T -> U) (toT : U -> T) : Prop :=
-  (forall (t : T), toT (ofT t) = t)
-  /\ (forall (u : U), ofT (toT u) = u).
-
 (* A state machine is observationally independent of part of its input
-   data if the observable part of the trace is the same regardless of
-   changes to that data. *)
-Definition observationally_independent
-  (* given a state machine... *)
-  {state input output} (m : @state_machine state input output)
-  (* ...and a way we're observing the state machine (e.g. scan, trace)... *)
-  {T} (observe : state_machine -> state -> list input -> T)
-  (* ...and a way to express the input data as a tuple of data we're
-        testing for and some other data... *)
-  {data other}
-  (extract : input -> data * other) (assemble : data * other -> input) : Prop :=
-  (* ...if that the tuple conversion does not lose information... *)
-  isomorphism extract assemble ->
+   data (test) if the observable part of the trace is always the same
+   when the NON-test input data (other) is the same. *)
+Definition independent
+  (* given an observation function (e.g. scan/trace of a state machine)... *)
+  {state other T} (test : Type) (observe : state -> list (other * test) -> T) : Prop :=
   (* ...then, for all start states and all pairs of input streams... *)
-  forall (start : state) (stream1 stream2 : list input),
-    (* ...if the data under test is the same (no assumptions about other data)... *)
-    map (fun i => fst (extract i)) stream1 = map (fun i => fst (extract i)) stream2 ->
+  forall (start : state) (stream1 stream2 : list (other * test)),
+    (* ...if the data not under test is the same... *)
+    map fst stream1 = map fst stream2 ->
     (* ...then the observations are the same. *)
-    observe m start stream1 = observe m start stream2.
+    observe start stream1 = observe start stream2.
 
-(* compose two state machines. *)
-Definition compose
-  {state1 state2 input middle output}
-  (m1 : @state_machine state1 input middle)
-  (m2 : @state_machine state2 middle output)
-  : @state_machine (state1 * state2) input output :=
-  fun (s : state1 * state2) (i : input) =>
-    let step1 := m1 (fst s) i in
-    let s1 := fst step1 in
-    let o1 := snd step1 in
-    let step2 := m2 (snd s) o1 in
-    let s2 := fst step2 in
-    let o2 := snd step2 in
-    ((s1, s2), o2).
-Local Infix ">=>" := compose (at level 40, only parsing).
+(* Contrapositive for independent *)
+Definition dependent
+  {state other T} (test : Type) (observe : state -> list (other * test) -> T) : Prop :=
+  exists (start : state) (stream1 stream2 : list (other * test)),
+    map fst stream1 = map fst stream2
+    /\ observe start stream1 <> observe start stream2.
 
-(* apply a state machine to the first part of a tuple, ignoring the second. *)
-Definition on_first
-  {state input output ignored}
-  (m : @state_machine state input output)
-  : @state_machine state (input * ignored) (output * ignored) :=
-  fun (s : state) (i : input * ignored) =>
-    let step := m s (fst i) in
-    let s' := fst step in
-    let o := snd step in
-    (s', (o, snd i)).
+Lemma dependent_not_independent
+  {state other T} (test : Type) (observe : state -> list (other * test) -> T) :
+  dependent test observe -> ~ independent test observe.
+Proof.
+  cbv [dependent independent].
+  repeat match goal with
+         | _ => progress intros
+         | H : exists _, _ |- _ => destruct H
+         | H : _ /\ _ |- _ => destruct H
+         | _ => solve [auto]
+         end.
+Qed.
 
-(* split a signal into two paths *)
-Definition fork {t} : @state_machine unit t (t * t) :=
-  fun _ (i : t) => (tt, (i, i)).
+Lemma independent_not_dependent
+  {state other T} test (observe : state -> list (other * test) -> T) :
+  independent test observe -> ~ dependent test observe.
+Proof.
+  cbv [dependent independent].
+  repeat match goal with
+         | _ => progress intro
+         | H : exists _, _ |- _ => destruct H
+         | H : _ /\ _ |- _ => destruct H
+         | _ => solve [auto]
+         end.
+Qed.
 
 (* Represents one component state machine embedded inside a larger
    state machine. This is represented by some "pre" logic that
@@ -124,81 +112,65 @@ Definition with_component
     let o := snd post_step in
     ((s1', s2', s3'), o).
 
+(* given an observation model (e.g. individual component state), the state at every point is enough to determine the current tested bits -- a change to even one bit changes the trace *)
 (* Something something all bits are represented? unique? *)
 Definition fully_dependent
-  (* given a state machine... *)
-  {state input output} (m : @state_machine state input output)
-  (* ...and a way we're observing the state machine (e.g. scan, trace)... *)
-  {T} (observe : state_machine -> state -> list input -> T)
-  (* ...and a way to express the input data as a tuple of data we're
-        testing for and some other data... *)
-  {data other}
-  (extract : input -> data * other) (assemble : data * other -> input) : Prop :=
-  (* ...if that the tuple conversion does not lose information... *)
-  isomorphism extract assemble ->
+  (* ...and an observation function (e.g. the state trace of a component)... *)
+  {state other T} test (observe : state -> list (other * test) -> T) : Prop :=
   (* ...then, for all start states and all pairs of input streams... *)
-  forall (start : state) (stream1 stream2 : list input),
-    (* ...if the data under test is the same (no assumptions about other data)... *)
-    map (fun i => fst (extract i)) stream1 = map (fun i => fst (extract i)) stream2 ->
-    (* ...then the observations are the same. *)
-    observe m start stream1 = observe m start stream2.
+  forall (start : state) (stream1 stream2 : list (other * test)),
+    (* ...if the data under test is different... *)
+    map fst stream1 <> map fst stream2 ->
+    (* ...then the observations are different. *)
+    observe start stream1 <> observe start stream2.
 
-Lemma scan_dependence
-  (* given a component embedded in a state machine...*)
-  {input output pre_state comp_state post_state comp_input comp_output post_input}
+Definition component_state_trace
+  {input output pre_state comp_state post_state comp_input comp_output}
   (pre : @state_machine pre_state input comp_input)
   (comp : @state_machine comp_state comp_input comp_output)
   (post : @state_machine post_state (comp_output * input) output)
-  (* ...and a portion of the input data under test... *)
-  {se_bits other}
-  (extract : input -> se_bits * other) (assemble : se_bits * other -> input) :
-  (* ...if the extract/assemble routines are formed properly... *)
-  isomorphism extract assemble ->
+  : (pre_state * comp_state * post_state) -> list input -> list comp_state :=
+  fun start stream =>
+    let t := trace (with_component pre comp post) start stream in
+    (* pull out the component state from the global state *)
+    map (fun s => snd (fst s)) (fst t).
+
+Lemma scan_component_dependence
+  (* given a component embedded in a state machine...*)
+  {input se_bits output pre_state comp_state post_state comp_input comp_output}
+  (pre : @state_machine pre_state (input * se_bits) comp_input)
+  (comp : @state_machine comp_state comp_input comp_output)
+  (post : @state_machine post_state (comp_output * (input * se_bits)) output) :
+  let post_rearranged :
+    @state_machine post_state (comp_output * input * se_bits) output :=
+    fun s i =>
+      (* rearrange tuple *)
+      let i0 := fst (fst i) in
+      let i1 := snd (fst i) in
+      let i2 := snd i in
+      post s (i0, (i1, i2)) in    
   (* ...and the state machine is observationally independent of the
         data in the scan observation model... *)
-  observationally_independent (with_component pre comp post) scan extract assemble ->
+  independent se_bits (scan (with_component pre comp post)) ->
   (* ...and the pre and post logic are independent of the scan enable
         bits in the full-trace observation model (they are honest)... *)
-  observationally_independent pre trace extract assemble ->
-  observationally_independent
-    post trace
-    (fun (i : comp_output * input) =>
-       let extracted := extract (snd i) in
-       let se := fst extracted in
-       let other := snd extracted in
-       (se, (fst i, other)))
-    (fun x =>
-       assemble ->
-  (* ..then either the full circuit including the component is honest... *)
-  (observationally_independent (with_component pre comp post) trace extract assemble)
-  (* ...or the component's individual state depends on all scan enable bits. *)
-  \/ (True).
+  independent se_bits (trace pre) ->
+  independent se_bits (trace post_rearranged) ->
+  (* ..and the full circuit including the component is NOT honest... *)
+  dependent se_bits (trace (with_component pre comp post)) ->
+  (* ...then the component's individual state depends on all scan enable bits. *)
+  fully_dependent se_bits (component_state_trace pre comp post).
+Proof.
+  cbv [independent dependent fully_dependent]; intros.
+  intro.
+  repeat match goal with
+         | H : exists _, _ |- _ => destruct H
+         | H : _ /\ _ |- _ => destruct H
+         end.
 
   
-(* Need to somehow in here have the notion of the internal component of the circuit... *)
-Lemma scan_dependence
-  (* given a state machine...*)
-  {state input output} (m : @state_machine state input output)
-  (* ...and a portion of the input data under test... *)
-  {se_bits other}
-  (extract : input -> se_bits * other) (assemble : se_bits * other -> input) :
-  (* ...if the extract/assemble routines are formed properly... *)
-  isomorphism extract assemble ->
-  (* ...and the state machine is observationally independent of the
-        data in the scan observation model... *)
-  observationally_indepenent m scan extract assemble ->
-  (* ..then either the state machine is also independent of the data
-     in the full-trace observation model... *)
-  (observationally_independent m trace extract assemble)
-  (* ...or all scan enable bits can be inferred from the state and input. *)
-  \/ ().
+  (* chain pre-honest and component state to prove component input and state are honest? *)
   
-  (* defines an abstract state machine *)
-  {state input output : Type}
-  (step : state -> input -> state * output)
-  (* we can extract a certain number of scan enable bits from the
-     input *)
-  (n : nat) (extract_scan_enable : input -> list bool)
-  (length_extract_scan_enable : forall input, length (extract_scan_enable input) = n)
-  :
   
+
+Qed.  
