@@ -1,4 +1,5 @@
 Require Import Coq.Lists.List.
+Require Import Coq.micromega.Lia.
 Import ListNotations.
 
 (* register state : known registers in their scan chain formation and
@@ -7,15 +8,15 @@ Definition registers : Type := list (list bool) * list bool.
 
 (* Defines the untrusted but purely combinational logic of a circuit
    (essentially a Moore machine). *)
-Definition logic {input output} : Type :=
+Definition logic : Type :=
   forall
     (* register values *)
     (regs : registers)
     (* scan enable bits *)
     (se : list bool)
     (* input value for this cycle *)
-    (i : input),
-    registers * output.
+    (i : list bool),
+    registers * list bool.
 
 (* returns true iff there is at least one true in the list *)
 Definition any (l : list bool) : bool := fold_left andb l false.
@@ -26,20 +27,19 @@ Section WithAbstractDefs.
      registers that aren't part of the scan chain. *)
   Context (throttle : registers -> registers).
 
-  Definition test_input {input} : Type :=
+  Definition test_input : Type :=
     (* new states for chains (or None if the chain should not be reset *)
     list (option (list bool))
     (* input value *)
-    * input.
+    * list bool.
 
   (* step the circuit, including logic that might shift a scan chain;
      model the shift as a reset of the whole chain for now *)
-  Definition scan_step
-    {input output} (m : @logic input output)    
+  Definition scan_step (m : logic)
     (* start register values *)
     (regs : registers)
     (i : test_input)
-    : registers * output :=
+    : registers * list bool :=
     let chain_i := fst i in
     (* infer scan-enable signals *)
     let se := map (fun x => match x with
@@ -63,15 +63,14 @@ Section WithAbstractDefs.
   Definition regs_wf (regs : registers) (chains : list nat) (mlen : nat) : Prop :=
     map (@length bool) (fst regs) = chains
     /\ length (snd regs) = mlen.
-  Fixpoint test_wf {input} (i : @test_input input) (chains : list nat) : Prop :=
+  Fixpoint test_wf (i : test_input) (chains : list nat) : Prop :=
     let chain_i := fst i in
     length chain_i = length chains
     /\ Forall2 (fun i c => match i with
                            | Some l => length l = c
                            | None => True
                            end) chain_i chains.
-  Definition logic_wf
-    {input output} (m : @logic input output)
+  Definition logic_wf (m : logic)
     (chains : list nat) (mlen : nat) : Prop :=
     forall regs ms i,
       regs_wf regs chains mlen ->
@@ -81,7 +80,7 @@ Section WithAbstractDefs.
 
   (* States two circuits are always observably the same when scanned. *)
   Definition indistinguishable
-    {input output} (trojan facade : @logic input output) (chains : list nat) mlen : Prop :=
+    (trojan facade : logic) (chains : list nat) mlen : Prop :=
     forall regs i,
       test_wf i chains ->
       regs_wf regs chains mlen ->
@@ -100,169 +99,96 @@ Section WithAbstractDefs.
   (* something is off, it's too awkward to state and reason
   about. think some more. I think this model is accurate to what the
   scan chain does but not nice to reason about. *)
+
+  (* invert known registers *)
+  Definition invert (regs : registers) :=
+    (map (fun x => map negb x) (fst regs) , snd regs).
+
+  Lemma regs_wf_after_invert (regs : registers) (chains : list nat) (mlen : nat) :
+    regs_wf regs chains mlen ->
+    regs_wf (invert regs) chains mlen.
+  Proof.
+    cbv [regs_wf invert]; intros.
+    repeat match goal with
+           | _ => progress cbn [fst snd]
+           | H : _ /\ _ |- _ => destruct H
+           end.
+    split; [ | assumption ].
+    rewrite map_map.
+    erewrite map_ext; [ apply H | ].
+    intros. rewrite map_length; reflexivity.
+  Qed.
+
+  Lemma hd_repeat {A} (d : A) n : hd d (repeat d n) = d.
+  Proof. destruct n; reflexivity. Qed.
   
+  Lemma invert_ne (regs : registers) :
+    0 < length (fst regs) ->
+    invert regs <> regs.
+  Admitted.
+
+  Lemma logic_wf_num_chains (m : logic) chains mlen regs se i :
+    logic_wf m chains mlen -> length (fst (fst (m regs se i))) = length chains.
+  Admitted.
+    
   (* A single scan chain is not enough to detect even a purely
      combinational trojan; for every good circuit, there exists a
      combinational trojan that will be indistinguishable from it. *)
   Lemma single_chain_insufficient
-    {input output} (facade : @logic input output) (nregs : nat) :
+    (facade : logic) (nregs : nat) :
     logic_wf facade [nregs] 0 ->
+    (* there is at least one register (helpful for making the
+    counterexample, we have to observe something to observe a
+    difference -- can probably weaken to at least one register or a
+    non-empty output *)
+    0 < nregs ->
     exists trojan,
+      (* trojan is a constructable circuit *)
       logic_wf trojan [nregs] 0
-      (* TODO: and not always equivalent when not being scanned! *)
+      (* the two circuits are not equivalent*)
+      /\ (exists regs se i, fst (trojan regs se i) <> fst (facade regs se i))
+      (* but they are indistinguishable by scanning *)
       /\ indistinguishable trojan facade [nregs] 0.
   Proof.
     cbv [indistinguishable]; intros.
-    exists (fun regs se i =>
-              let en := hd se 0 in
+    (* there exists a trojan that imitates the facade's combinational
+       logic when enable is high, but inverts everything when scan is
+       low *)
+    set (trojan :=fun regs se i =>
+              let en := hd false se in
+              let f := facade regs se i in
+              let regs' := fst f in
+              let o := snd f in
               if en
               then facade regs se i
-              else facade regs se i).
-    (* register values *)
-    (regs : registers)
-    (* scan enable bits *)
-    (se : list bool)
-    (* input value for this cycle *)
-    (i : input),
-    registers * output.
-
-
-  Qed.
-  
-
-  Inductive indistinguishable {input output}
-    : @logic input output -> @logic input output -> 
-
-  (* step the circuit and observe only the known registers *)
-  Definition scan_step_and_observe
-    {input output} (m : @logic input output)
-    (current : list (list (list bool) * output) * registers)
-    (next : list (option (list bool)) * input)
-    : list (list (list bool) * output) * registers :=
-    let trace := fst current in
-    let regs := snd current in
-    let chain_i := fst next in
-    let i := snd next in
-    (scan_step m regs chain_i i :: trace, .
-    
-
-
-  Definition scan
-    {input output} (m : @logic input output)
-    (* start register values *)
-    (regs : registers)
-    (* new states for chains and input values *)
-    (test : list (list (option (list bool)) * input))
-    : list (list (list bool)) * registers * list output :=
-    fold_left
-      (fun current next =>
-         let chain_i := 
-         scan_step regs)
-      test
-    (* infer scan-enable signals *)
-    let se := map (fun x => match x with
-                            | Some l => true
-                            | None => false
-                            end) chain_i in
-    (* if any scan enable is set, throttle all register values *)
-    let regs := if any se then throttle regs else regs in
-    let known_regs := fst regs in
-    let unknown_regs := snd regs in
-    (* for each chain, if the scan enable is set, reset the value to
-       the corresponding entry in chain_i *)
-    let regs := (map (fun x => match fst x with
-                               | Some l => l
-                               | None => snd x
-                               end) (combine chain_i known_regs), unknown_regs) in
-    (* now execute the combinational logic *)
-    let result := m regs se i in
-    let regs' := fst result in
-    let out := snd result in
-    (fst regs', out).
-
-  (* Boilerplate that lets us say the circuit logic can't change the number of registers. *)
-  Definition regs_wf (regs : registers) (chains : list nat) (mlen : nat) : Prop :=
-    map (@length bool) (fst regs) = chains
-    /\ length (snd regs) = mlen.
-  Definition logic_wf
-    {input output} (m : @logic input output)
-    (chains : list nat) (mlen : nat) : Prop :=
-    forall regs ms i,
-      regs_wf regs chains mlen ->
-      let x := m regs ms i in
-      let regs' := fst x in
-      regs_wf regs' chains mlen.
-
-  Definition indistinguishable {input output} (m1 m2 : @logic input output) : Prop :=
-    forall regs1 regs2 chain_i i,
-      fst regs1 = fst regs2 ->
-      scan_step m1 regs1 chain_i i = scan_step m2 regs2 chain_i i.
-  
-  (* A single scan chain is not enough to detect a purely combinational trojan. *)
-  (* it is possible for a trojan to be indistinguishable from  *)
-  Lemma single_chain_insufficient
-    {input output} (m : @logic input output) (nregs : nat) :
-    (* one chain containing all registers *)
-    let chains := [nregs] in
-    logic_wf m chains 0 ->
-    undetectable chains m.
-    
-    
-  
+              else (invert regs', o)).
+    exists trojan.
+    cbn [scan_step fst snd].
+    repeat match goal with
+           | |- _ /\ _ => split
+           end.
+    { (* prove the trojan is well-formed *)
+      cbv [logic_wf]. subst trojan.
+      intros regs ms i Hregs.
+      lazymatch goal with H : logic_wf _ _ _ |- _ => specialize (H regs ms i Hregs) end.
+      cbv zeta in *. cbn [fst snd] in *.
+      destruct (hd false ms); [ assumption | ].
+      cbn [fst snd].
+      apply regs_wf_after_invert; auto. }
+    { (* prove that a bad non-scan input exists *)
+      exists ([repeat false nregs], []), (repeat false nregs), [].
+      subst trojan. cbn.
+      rewrite !hd_repeat.
+      apply invert_ne.
+      erewrite logic_wf_num_chains; eauto.
+      cbn [length]; lia. }
+    { intros [k u]; intros. cbn [fst snd].
+      cbv [regs_wf] in *. cbn [fst snd] in *.
+      repeat match goal with
+             | H : _ /\ _ |- _ => destruct H
+             | H : length ?x = 0 |- _ => destruct x; [| cbn [length] in H; lia]
+             end.
+      split; reflexivity. }
+  Qed.  
 
 End WithAbstractDefs.
-  
-  
-  
-  
-
-(* we want to talk about the state of the circuit as including some unknown component, and visualize like a moore machine:
-
-r1 r2 r3   ... M
-    |
-    |
-   \/
-<comb logic, totally untrusted>
-   |
-   |
-  \/
-r1 r2 r3 ... M
-
-All registers depend on all others.
-
- *)
-
-Definition trace_step
-  {state input output} (m : state_machine)
-  (* observation function *)
-  {T} (observe : state -> output -> T)
-  (* manipulation function *)
-  (manipulate : state -> state)
-  (current : state * list T) (next : input) : state * list T :=
-  let state := fst current in
-  let t := snd current in
-  let step := m state next in
-  let new_state := fst step in
-  let new_out := snd step in
-  (manipulate new_state, observe new_state new_out :: t).
-
-(* Get the trace of a state machine under a particular observation function. *)
-Definition trace
-  {state input output} (m : state_machine)
-  {T} (observe : state -> output -> T)
-  (start : state) (stream : list input)
-  : state * list T :=
-  fold_left (trace_step m observe) stream (start, []).
-
-
-(* Observation function for a scan chain operation that captures all
-   registers at the same time and only at the end. We don't see the
-   intermediate states (although we can see the final state). This
-   corresponds to running the circuit for a while and then doing a
-   one-time snapshot of the state. *)
-Definition simple_scan {state output} : state -> output -> output := fun _ o => o.
-
-(* A scan that captures all possible information. *)
-Definition full_scan {state output} : state -> output -> state * output := fun s o => (s, o).
-
-
