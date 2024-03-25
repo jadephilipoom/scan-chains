@@ -121,15 +121,67 @@ Section WithAbstractDefs.
 
   Lemma hd_repeat {A} (d : A) n : hd d (repeat d n) = d.
   Proof. destruct n; reflexivity. Qed.
-  
-  Lemma invert_ne (regs : registers) :
-    0 < length (fst regs) ->
-    invert regs <> regs.
-  Admitted.
 
-  Lemma logic_wf_num_chains (m : logic) chains mlen regs se i :
-    logic_wf m chains mlen -> length (fst (fst (m regs se i))) = length chains.
-  Admitted.
+  Definition num_known_regs (chains : list nat) : nat :=
+    fold_left Nat.add chains 0.
+
+  (* States that the circuit has at least one known register (i.e. it
+     is not a combinational circuit). *)
+  Definition is_sequential (chains : list nat) : Prop :=
+    0 < num_known_regs chains.
+
+  Lemma concat_snoc {A} (l : list (list A)) :
+    forall a, concat (l ++ [a]) = concat l ++ a.
+  Proof.
+    induction l; intros; cbn [concat app]; [ rewrite app_nil_r; reflexivity | ].
+    rewrite IHl. apply app_assoc.
+  Qed.
+
+  Lemma length_known_regs (regs : registers) (chains : list nat) mlen :
+    regs_wf regs chains mlen ->
+    length (concat (fst regs)) = num_known_regs chains.
+  Proof.
+    cbv [regs_wf num_known_regs]; intros.
+    destruct regs as [known unknown]; cbn [fst snd] in *.
+    lazymatch goal with
+    | H : _ /\ _ |- _ => destruct H
+    end.
+    subst.
+    induction known using rev_ind;
+      subst; cbn [map fold_left concat] in *; intros; [ reflexivity | ].
+    rewrite concat_snoc.
+    rewrite map_app, fold_left_app, app_length.
+    cbn [map fold_left]. lia.
+  Qed.
+
+  (* Helper lemma for invert that helps prove other lemmas by removing
+     the chain structure. *)
+  Lemma invert_flat (regs : registers) :
+    concat (fst (invert regs)) = map negb (concat (fst regs)).
+  Proof.
+    cbv [invert]. destruct regs as [known unknown]; cbn [fst snd].
+    induction known; [ reflexivity | ].
+    cbn [concat map]. rewrite map_app, IHknown. reflexivity.
+  Qed.
+  
+  Lemma invert_ne (regs : registers) (chains : list nat) mlen :
+    is_sequential chains ->
+    regs_wf regs chains mlen ->
+    invert regs <> regs.
+  Proof.
+    cbv [is_sequential].  intros. intro.
+    lazymatch goal with
+    | H : regs_wf _ _ _ |- _ => apply length_known_regs in H
+    end.
+    assert (concat (fst (invert regs)) = concat (fst regs)) as Hconcat by congruence.
+    destruct regs as [known unknown]; cbn [fst snd] in *.
+    rewrite invert_flat in Hconcat. cbn [fst snd] in *.
+    destruct (concat known); cbn [map length] in *; [ lia | ].
+    lazymatch goal with
+    | H : _ :: _ = _ :: _ |- _ => inversion H
+    end.
+    eapply Bool.no_fixpoint_negb; eauto.
+  Qed.
     
   (* A single scan chain is not enough to detect even a purely
      combinational trojan; for every good circuit, there exists a
@@ -141,12 +193,14 @@ Section WithAbstractDefs.
     counterexample, we have to observe something to observe a
     difference -- can probably weaken to at least one register or a
     non-empty output *)
-    0 < nregs ->
+    is_sequential [nregs] ->
     exists trojan,
       (* trojan is a constructable circuit *)
       logic_wf trojan [nregs] 0
       (* the two circuits are not equivalent*)
-      /\ (exists regs se i, fst (trojan regs se i) <> fst (facade regs se i))
+      /\ (exists regs se i,
+             regs_wf regs [nregs] 0
+             /\ fst (trojan regs se i) <> fst (facade regs se i))
       (* but they are indistinguishable by scanning *)
       /\ indistinguishable trojan facade [nregs] 0.
   Proof.
@@ -176,12 +230,15 @@ Section WithAbstractDefs.
       cbn [fst snd].
       apply regs_wf_after_invert; auto. }
     { (* prove that a bad non-scan input exists *)
-      exists ([repeat false nregs], []), (repeat false nregs), [].
-      subst trojan. cbn.
+      let regs := constr:(([repeat false nregs], @nil bool)) in
+      let se := constr:(repeat false nregs) in
+      let i := constr:(@nil bool) in
+      assert (regs_wf regs [nregs] 0)
+        by (split; cbn; rewrite ?repeat_length; reflexivity);
+      exists regs, se, i.
+      subst trojan. cbn. split; [ assumption | ].
       rewrite !hd_repeat.
-      apply invert_ne.
-      erewrite logic_wf_num_chains; eauto.
-      cbn [length]; lia. }
+      eapply invert_ne; eauto. }
     { intros [k u]; intros. cbn [fst snd].
       cbv [regs_wf] in *. cbn [fst snd] in *.
       repeat match goal with
@@ -189,6 +246,6 @@ Section WithAbstractDefs.
              | H : length ?x = 0 |- _ => destruct x; [| cbn [length] in H; lia]
              end.
       split; reflexivity. }
-  Qed.  
+  Qed.
 
 End WithAbstractDefs.
