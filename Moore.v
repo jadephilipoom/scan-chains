@@ -96,6 +96,10 @@ Section WithAbstractDefs.
 
   (* sort of dissatisfying, there should be a better way of expressing
      this than the list bools *)
+
+  (* something is off, it's too awkward to state and reason
+  about. think some more. I think this model is accurate to what the
+  scan chain does but not nice to reason about. *)
   
   (* A single scan chain is not enough to detect even a purely
      combinational trojan; for every good circuit, there exists a
@@ -104,14 +108,16 @@ Section WithAbstractDefs.
     {input output} (facade : @logic input output) (nregs : nat) :
     logic_wf facade [nregs] 0 ->
     exists trojan,
-      indistinguishable trojan facade [nregs] 0.
+      logic_wf trojan [nregs] 0
+      (* TODO: and not always equivalent when not being scanned! *)
+      /\ indistinguishable trojan facade [nregs] 0.
   Proof.
     cbv [indistinguishable]; intros.
     exists (fun regs se i =>
               let en := hd se 0 in
               if en
-              then facade i
-              else 
+              then facade regs se i
+              else facade regs se i).
     (* register values *)
     (regs : registers)
     (* scan enable bits *)
