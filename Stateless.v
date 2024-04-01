@@ -96,21 +96,20 @@ Section WithAbstractDefs.
     (input : list (list bool)) : Prop :=
     (* either the trace is already different... *)
     trace M input start_regs <> trace H input start_regs
-    (* ...or M changes the state in such a way that, for any continued
-       input, the output trace will be different than it would have
-       been with either M running on the honest state value (i.e. M
-       does not ignore the state change for its own future behavior)
-       or H running on the honest state value (i.e. M does something
-       different from H) *)
+    (* ...or M has done something to the state such that, if the scan
+    bit is low, M will act differently on that state than the honest
+    state (i.e. M does not ignore the state change it made) and M will
+    act differently on that state than H would on the honest state
+    (i.e. M does not undo its own change and stop causing trouble). *)
     (* note: the forall here is a little strong, it says M must
     *never* ignore the state change. should be weakened to something
     probablistic, e.g. the tester has a good chance of randomly
     selecting an input where M's trace differs *)
-    \/ (forall input2,
+    \/ (forall i,
            let mregs := exp_regs M input start_regs in
            let hregs := exp_regs H input start_regs in
-           trace M input2 mregs <> trace M input2 hregs
-           /\ trace M input2 mregs <> trace H input2 hregs).
+           M mregs false i <> M hregs false i
+           /\ M mregs false i <> H hregs false i).
 
   (* states that some logic is honest, i.e. it ignores the scan bit *)
   Definition honest (H : logic) :=
@@ -193,17 +192,29 @@ Section WithAbstractDefs.
           end ]
     end.
 
-    (* TODO: rephrase consequential to say after the run input, either
-    the trace is different or the state is different, and in the
-    state-different case stepping M on *one more input* must yeild a new
-    M (state x output) that differs from MH or HH *)
-    (* can we define it in a more general way (like exists input2 ->
-    trace different) and prove that that implies state x output is
-    different, because M has no state *)
+    lazymatch goal with
+    | H : forall i, M _ _ i <> M _ _ i /\ _ |- _ =>
+        specialize (H i); destruct H as [H ?]; apply H
+    end.
+
+    (* WIP -- this proof does not check *)
+
+  (* m can depend on the scan bit here -- we need to rely on the
+     fact that M has to correct its state and the correction must do
+     something, so something different happens here when the state
+     needs no correction *)
+    (*
+      - assume all states reachable, including faulted state
+      - if the state is faulted and we scan it, M must correct
+      - if the state is the faulted state (but reached honestly) and we scan it, M must not correct
+      - M cannot distinguish these cases without state
+      - therefore, M can only modify the state in ways that are not reachable by H <<--
+
+      - how does that interact probabilistically though?
+      - all states might be reachable by H *eventually* but not quick enough to scan
+      - we could say there exists a way to reach all states with a reasonable number of cycles
+      - since M does not know the test inputs, it can't rely on not hitting the state
+     *)
     
     
   Qed.
-
-  
-    
-    
