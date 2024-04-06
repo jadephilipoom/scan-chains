@@ -142,11 +142,13 @@ Section WithAbstractDefs.
     apply f_equal. apply IHl1; auto.
   Qed.
 
-  (* states that a combinational M that has consequential behavior for
-     some input can always be caught with a single scan chain test
-     using that input and tester-set state *)
-  Lemma consequential_caught :
-    forall M H (input : list (list bool)) i start_regs,
+  (* core argument: we know how H should behave on all states,
+     therefore whatever state M uses, we could always trigger that
+     state and observe the correction. *)
+
+  (* states that a fully combinational M must be catchable by some scan input *)
+  Lemma combinational_detectable :
+    forall H (input : list (list bool)) i start_regs M,
       honest H ->
       consequential M H start_regs input ->
       (* first just run the circuit until we get to the point where M
@@ -154,16 +156,16 @@ Section WithAbstractDefs.
       let scan_input := map (fun x => (x, None)) input in
       (* get the expected value of the honest registers after that trace *)
       let hregs := exp_regs H input start_regs in
-      (* after the last cycle, scan the registers and set their value
-         to the honest registers' values from the last cycle *)
-      let scan_input := scan_input ++ [(i, Some hregs)] in
-      (* now read again with the same input *)
-      let scan_input := scan_input ++ [(i, Some hregs)] in
-      (* the trojan is detectable *)
+      (* get the expected value of the faulted registers after that trace *)
+      let mregs := exp_regs M input start_regs in
+      (* run two scans, one which forces M to correct and one where it shouldn't *)
+      let scan_input := scan_input ++ [(i, Some mregs)] ++ [(i, Some mregs)] in
+      (* if H would produce a different state or output on the faulted state... *)
+      H mregs false i <> H hregs false i ->
+      (* ..then M is detectable by the scan pattern. *)
       detectable M H start_regs scan_input.
   Proof.
     cbv [detectable]; intros.
-    rewrite <-app_assoc.
     rewrite !run_before_scanning. cbn [app].
     cbn [scan_trace fst snd].
     (* transform _ ++ (_ :: _ :: nil) into _ ++ (_ :: nil) ++ (_ :: nil) *)
@@ -194,27 +196,17 @@ Section WithAbstractDefs.
 
     lazymatch goal with
     | H : forall i, M _ _ i <> M _ _ i /\ _ |- _ =>
-        specialize (H i); destruct H as [H ?]; apply H
+        specialize (H i); destruct H
     end.
 
-    (* WIP -- this proof does not check *)
+    remember (exp_regs M input start_regs) as mI.
+    remember (exp_regs H input start_regs) as hI.
 
-  (* m can depend on the scan bit here -- we need to rely on the
-     fact that M has to correct its state and the correction must do
-     something, so something different happens here when the state
-     needs no correction *)
-    (*
-      - assume all states reachable, including faulted state
-      - if the state is faulted and we scan it, M must correct
-      - if the state is the faulted state (but reached honestly) and we scan it, M must not correct
-      - M cannot distinguish these cases without state
-      - therefore, M can only modify the state in ways that are not reachable by H <<--
-
-      - how does that interact probabilistically though?
-      - all states might be reachable by H *eventually* but not quick enough to scan
-      - we could say there exists a way to reach all states with a reasonable number of cycles
-      - since M does not know the test inputs, it can't rely on not hitting the state
-     *)
-    
-    
+    lazymatch goal with
+    | H1 : ?m _ _ _ <> ?m _ _ _, H2: honest ?m |- False =>
+        apply H1; rewrite !H2 with (se1:=false) (se2:=true)
+    end.
+    congruence.
   Qed.
+
+End WithAbstractDefs.
