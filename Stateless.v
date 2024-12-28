@@ -58,7 +58,7 @@ Section WithAbstractDefs.
     : list (option (list bool) * list bool) :=
     match input with
     | [] => []
-    | i :: input =>        
+    | i :: input =>
         (* infer scan-enable signal and reset registers if needed *)
         let se := match (snd i) with | Some _ => true | None => false end in
         (* step the logic *)
@@ -88,37 +88,32 @@ Section WithAbstractDefs.
         exp_regs H input hregs
     end.
 
-  (* states that M does something that "matters" on the given input x
-     state when the scan bit is low -- it will eventually change the
-     output of the circuit, although maybe not immediately *)
+  (* states that M does something that "matters" on the given input state when
+     the scan bit is low -- it will eventually change the output of the circuit,
+     although maybe not immediately *)
   Definition consequential
     (M H : logic) (start_regs : list bool)
-    (input : list (list bool)) : Prop :=
+    (prev_input : list (list bool)) (new_input : list bool) : Prop :=
     (* either the trace is already different... *)
-    trace M input start_regs <> trace H input start_regs
+    trace M prev_input start_regs <> trace H prev_input start_regs
     (* ...or M has done something to the state such that, if the scan
     bit is low, M will act differently on that state than the honest
     state (i.e. M does not ignore the state change it made) and M will
     act differently on that state than H would on the honest state
     (i.e. M does not undo its own change and stop causing trouble). *)
-    (* note: the forall here is a little strong, it says M must
-    *never* ignore the state change. should be weakened to something
-    probablistic, e.g. the tester has a good chance of randomly
-    selecting an input where M's trace differs *)
-    \/ (forall i,
-           let mregs := exp_regs M input start_regs in
-           let hregs := exp_regs H input start_regs in
-           M mregs false i <> M hregs false i
-           /\ M mregs false i <> H hregs false i).
+    \/ let mregs := exp_regs M prev_input start_regs in
+       let hregs := exp_regs H prev_input start_regs in
+       M mregs false new_input <> M hregs false new_input
+       /\ M mregs false new_input <> H hregs false new_input.
 
   (* states that some logic is honest, i.e. it ignores the scan bit *)
   Definition honest (H : logic) :=
-    forall regs se1 se2 i, H regs se1 i = H regs se2 i. 
+    forall regs se1 se2 i, H regs se1 i = H regs se2 i.
 
   Definition detectable (M H : logic) (start_regs : list bool)
     (scan_input : list (list bool * option (list bool))) : Prop :=
-    (* the scan trace on M is different from the scan trace on H
-         with the same input and start value *) 
+    (* the scan trace on M is different from the scan trace on H with the same
+       input and start value *)
     scan_trace M scan_input start_regs <> scan_trace H scan_input start_regs.
 
   Lemma run_before_scanning :
@@ -150,7 +145,7 @@ Section WithAbstractDefs.
   Lemma combinational_detectable :
     forall H (input : list (list bool)) i start_regs M,
       honest H ->
-      consequential M H start_regs input ->
+      consequential M H start_regs input i ->
       (* first just run the circuit until we get to the point where M
          has done something or is about to do something *)
       let scan_input := map (fun x => (x, None)) input in
@@ -194,10 +189,7 @@ Section WithAbstractDefs.
           end ]
     end.
 
-    lazymatch goal with
-    | H : forall i, M _ _ i <> M _ _ i /\ _ |- _ =>
-        specialize (H i); destruct H
-    end.
+    repeat lazymatch goal with H : _ /\ _ |- _ => destruct H end.
 
     remember (exp_regs M input start_regs) as mI.
     remember (exp_regs H input start_regs) as hI.
